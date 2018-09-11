@@ -1,3 +1,6 @@
+-- AND2: A 2-input AND gate
+-- Author: Aji Sjamsu
+
 library IEEE;
 use IEEE.STD_LOGIC_1164.all;
 
