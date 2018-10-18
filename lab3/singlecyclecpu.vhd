@@ -1,3 +1,12 @@
+-- singlecyclecpu.vhd : Full implementation of single cycle CPU
+-- Author: Aji Sjamsu
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.all;
+use IEEE.NUMERIC_STD.all;
+
+-----------------------------------------------------------------------
+
 entity SingleCycleCPU is
 port(clk :in STD_LOGIC;
      rst :in STD_LOGIC;
@@ -12,3 +21,215 @@ port(clk :in STD_LOGIC;
      DEBUG_MEM_CONTENTS : out STD_LOGIC_VECTOR(32*4 - 1 downto 0)
 );
 end SingleCycleCPU;
+
+-----------------------------------------------------------------------
+
+architecture SingleCycleCPU_arch of SingleCycleCPU is
+	signal sys_rst : std_logic;
+	signal sys_clk : std_logic;
+
+	-- IMEM signals
+	signal IMEM_addr	: std_logic_vector(31 downto 0);
+	signal instruction  : std_logic_vector(31 downto 0);
+	signal offset		: std_logic_vector(31 downto 0);
+	signal offset_sl2	: std_logic_vector(31 downto 0);
+	
+	-- control unit signals
+	-- opcode is part of instruction
+	signal RegDst	: std_logic;
+	signal Branch	: std_logic;
+	signal MemRead	: std_logic;
+	signal MemtoReg	: std_logic; -- controls 2x1 MUX
+	signal MemWrite	: std_logic;
+	signal ALUSrc	: std_logic;
+	signal RegWrite	: std_logic;
+	signal ALUOp	: std_logic_vector(1 downto 0);
+	
+	-- regfile signals
+	-- RR1 and RR2 part of instruction
+    signal WR       : STD_LOGIC_VECTOR (4 downto 0); --write reg
+    signal WD       : STD_LOGIC_VECTOR (31 downto 0); --write data
+    -- reg_clock is sys_clk
+    signal RD1      : STD_LOGIC_VECTOR (31 downto 0);
+    signal RD2      : STD_LOGIC_VECTOR (31 downto 0);
+	-- debug regs?
+	
+	-- ALU/ALU control signals
+	signal ALUOp     	: STD_LOGIC_VECTOR(1 downto 0);
+    -- funct comes from instruction
+    signal Operation	: STD_LOGIC_VECTOR(3 downto 0);
+	-- ALU_in1 comes from RD1
+    signal ALU_in2    	: STD_LOGIC_VECTOR(31 downto 0);
+    signal ALU_out   	: STD_LOGIC_VECTOR(31 downto 0);
+    signal ALU_zero   	: STD_LOGIC;
+    signal ALU_overflow	: STD_LOGIC;
+	
+	-- DMEM signals
+	-- write data is RD2
+	-- write Address is ALU_out
+	signal DMEM_out		: std_logic_vector(31 downto 0);
+	-- debug mem contents?
+	
+	-- PC signals
+	signal PC_addr_in	: std_logic_vector(31 downto 0);
+	-- PC address out becomes imem addr
+	signal PC_add4		: std_logic_vector(31 downto 0);
+	
+	signal PC_jump_sl2	: std_logic_vector(31 downto 0);
+	signal PC_final		: std_logic_vector(31 downto 0);
+	signal PCSrc		: STD_LOGIC;
+	
+begin
+	pc_inst	: work.pc
+	port map(
+		clk				=>	sys_clk,
+		rst				=>	sys_rst,
+		write_enable	=> 	'1',
+		AddressIn		=>	PC_addr_in,
+		AddressOut		=>	IMEM_addr
+	);
+	DEBUG_PC <= IMEM_addr;
+	
+	pc_incrementer_inst : work.add
+	port map(
+		in0 	=>	IMEM_addr,
+		in1		=>	4,
+		output	=>	PC_add4
+	);
+	
+	pc_jump_sl2_inst : work.shiftleft2
+	port map(
+		x	=>	"000000" & instruction(25 downto 0),
+		y	=>	PC_jump_sl2
+	);
+	
+	pc_addOffset_inst : work.add
+	port map(
+		in0		=>	PC_add4,
+		in1		=>	offset_sl2,
+		output	=>	PC_offset
+	);
+	
+	pc_chooseOffset_inst : work.mux32
+	port map(
+		in0		=>	PC_add4,
+		in1		=>	PC_offset,
+		sel		=>	PCSrc,
+		output	=>	PC_final
+	);
+	
+	pc_muxfinal_inst : work.mux32
+	port map(
+		in0 	=>	PC_final,
+		in1 	=> 	PC_add4(31 downto 28) & PC_jump_sl2(27 downto 0),
+		sel		=>	Jump,
+		output	=>	PC_addr_in
+	);
+	
+	imem_inst : work.imem
+	port map(	
+		Address		=>	IMEM_addr,
+		ReadData	=>	instruction
+	);
+	DEBUG_INSTRUCTION <= instruction;
+	
+	offset_sign_extend_inst : work.signextend
+	port map(
+		x 	=>	x"0000" & instruction(15 downto 0),
+		y 	=>	offset
+	);
+	
+	offset_SL2_inst : work.shiftleft2
+	port map(
+		x	=>	offset,
+		y	=>	offset_sl2
+	);
+	
+	control_inst : work.cpucontrol
+	port map(
+		Opcode		=>  instruction(31 downto 26),
+		RegDst   	=>	RegDst,
+		Branch   	=>	Branch,
+		MemRead  	=>	MemRead,
+		MemtoReg 	=> 	MemtoReg,
+		MemWrite 	=>	MemWrite,
+		ALUSrc   	=>	ALUSrc,
+		RegWrite 	=>	RegWrite,
+		Jump    	=>	Jump,
+		ALUOp		=>	ALUOp
+	);
+	
+	register_mux_inst : work.mux5
+	port map(
+		in0		=>	instruction(20 downto 16),
+		in1		=>	instruction(15 downto 11),
+		sel		=>	RegDst,
+		output	=>	WR
+	);
+	
+	registers_inst : work.registers
+	port map(
+		RR1			=>	instruction(25 downto 21),
+		RR2			=>	instruction(20 downto 16),
+		WR			=>	WR,
+		WD			=>	WD,
+		RegWrite	=>	RegWrite,
+		Clock		=>	sys_clk,
+		RD1			=>	RD1,
+		RD2			=>	RD2,
+		DEBUG_TMP_REGS 		=> 	DEBUG_TMP_REGS,
+		DEBUG_SAVED_REGS 	=> 	DEBUG_SAVED_REGS
+	);
+		
+	ALU_mux_inst : work.mux32
+	port map(
+		in0		=>	RD2,
+		in1		=>	offset,
+		sel		=>	ALUSrc,
+		output 	=>	ALU_in2
+	);
+	
+	ALUControl_inst : work.ALUControl
+	port map(
+		ALUOp		=>	ALUOp,
+		Funct		=>	instruction(5 downto 0),
+		Operation 	=>	Operation
+	);
+	
+	ALU_inst : work.ALU
+	port map(
+		a			=>	RD1,
+		b			=>	ALU_in2,
+		operation 	=>	Operation,
+		result 		=>	ALU_out,
+		zero 		=>	ALU_zero,
+		overflow	=>	ALU_overflow	
+	);
+	
+	PCSrc_and_inst : work.and
+	port map(
+		in0		=>	Branch,
+		in1 	=>	ALU_zero,
+		output	=>	PCSrc
+	);
+	
+	DMEM_inst : work.DMEM
+		WriteData	=>	RD2,
+		Address		=>	ALU_out,
+		MemRead		=>	MemRead,
+		MemWrite	=>	MemWrite,
+		Clock		=>	sys_clk,
+		ReadData	=>	DMEM_out
+	
+	
+	DMEM_mux_inst : work.mux32
+	port map(
+		in0		=>	ALU_out,
+		in1		=>	DMEM_out,
+		sel		=>	MemtoReg,
+		output	=>	WD
+	);
+	
+	
+
+end SingleCycleCPU_arch;
